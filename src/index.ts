@@ -1,63 +1,64 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
+import { tools, executeTool } from "./tools.js";
 
-const client = new Anthropic();
+if (!process.env.DEEPSEEK_API_KEY) {
+  console.error("Error: DEEPSEEK_API_KEY environment variable is not set.");
+  process.exit(1);
+}
 
-async function main() {
-  // 1. Create environment (reusable container config)
-  const environment = await client.beta.environments.create({
-    name: "w-agent-env",
-    config: {
-      type: "cloud",
-      networking: { type: "unrestricted" },
-    },
-  });
-  console.log("Environment:", environment.id);
+const client = new OpenAI({
+  baseURL: "https://api.deepseek.com",
+  apiKey: process.env.DEEPSEEK_API_KEY,
+});
 
-  // 2. Create agent (reusable, versioned config)
-  const agent = await client.beta.agents.create({
-    name: "W Agent",
-    model: "claude-opus-4-7",
-    system: "You are a helpful assistant.",
-    tools: [{ type: "agent_toolset_20260401", default_config: { enabled: true } }],
-  });
-  console.log("Agent:", agent.id, "version:", agent.version);
+async function runAgent(userMessage: string): Promise<void> {
+  console.log(`User: ${userMessage}\n`);
 
-  // 3. Start a session
-  const session = await client.beta.sessions.create({
-    agent: { type: "agent", id: agent.id, version: agent.version },
-    environment_id: environment.id,
-    title: "Hello session",
-  });
-  console.log("Session:", session.id);
-  console.log(`Watch: https://platform.claude.com/workspaces/default/sessions/${session.id}`);
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: "system", content: "You are a helpful assistant. Use tools when appropriate." },
+    { role: "user", content: userMessage },
+  ];
 
-  // 4. Open stream first, then send message concurrently
-  const stream = await client.beta.sessions.events.stream(session.id);
+  // Agentic loop: keep running until the model produces a final text response
+  while (true) {
+    const response = await client.chat.completions.create({
+      model: "deepseek-chat",
+      messages,
+      tools,
+      tool_choice: "auto",
+    });
 
-  await client.beta.sessions.events.send(session.id, {
-    events: [{
-      type: "user.message",
-      content: [{ type: "text", text: "Say hello and tell me what tools you have." }],
-    }],
-  });
+    const choice = response.choices[0];
+    const assistantMsg = choice.message;
 
-  // 5. Process events until idle or terminated
-  for await (const event of stream) {
-    if (event.type === "agent.message") {
-      for (const block of event.content) {
-        if (block.type === "text") process.stdout.write(block.text);
+    // Always append the assistant turn to keep history consistent
+    messages.push(assistantMsg);
+
+    if (choice.finish_reason === "tool_calls" && assistantMsg.tool_calls?.length) {
+      // Execute every requested tool and feed results back
+      for (const call of assistantMsg.tool_calls) {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(call.function.arguments || "{}");
+        } catch { /* leave args empty */ }
+
+        const result = executeTool(call.function.name, args);
+        console.log(`[tool] ${call.function.name}(${call.function.arguments}) → ${result}`);
+
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: result,
+        });
       }
-    } else if (event.type === "session.status_idle") {
-      if (event.stop_reason?.type !== "requires_action") break;
-    } else if (event.type === "session.status_terminated") {
+      // Continue the loop so the model can use the tool results
+    } else {
+      // Final text response
+      console.log(`\nAssistant: ${assistantMsg.content}`);
       break;
     }
   }
-
-  console.log("\n\nDone.");
-
-  // Cleanup
-  await client.beta.sessions.delete(session.id);
 }
 
-main().catch(console.error);
+// Entry point
+runAgent("What time is it now? Also, what is 123 * 456?").catch(console.error);
