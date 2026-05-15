@@ -1,58 +1,59 @@
-import type OpenAI from "openai";
+import type Anthropic from "@anthropic-ai/sdk";
 
-// --- Tool definitions (schema) ---
-export const tools: OpenAI.Chat.ChatCompletionTool[] = [
+export const tools: Anthropic.Tool[] = [
   {
-    type: "function",
-    function: {
-      name: "get_current_time",
-      description: "Return the current UTC date and time.",
-      parameters: { type: "object", properties: {} },
+    name: "get_weather",
+    description: "Get the current weather for a location",
+    input_schema: {
+      type: "object",
+      properties: {
+        location: {
+          type: "string",
+          description: "The city and country, e.g. 'Tokyo, Japan'",
+        },
+      },
+      required: ["location"],
     },
   },
   {
-    type: "function",
-    function: {
-      name: "calculator",
-      description: "Evaluate a basic arithmetic expression.",
-      parameters: {
-        type: "object",
-        properties: {
-          expression: {
-            type: "string",
-            description: "Math expression to evaluate, e.g. \"3 * (2 + 5)\"",
-          },
+    name: "calculate",
+    description: "Evaluate a mathematical expression",
+    input_schema: {
+      type: "object",
+      properties: {
+        expression: {
+          type: "string",
+          description: "The math expression to evaluate, e.g. '2 + 3 * 4'",
         },
-        required: ["expression"],
       },
+      required: ["expression"],
     },
   },
 ];
 
-// --- Tool implementations ---
 export function executeTool(
   name: string,
-  args: Record<string, unknown>
+  input: Record<string, unknown>
 ): string {
   switch (name) {
-    case "get_current_time":
-      return new Date().toUTCString();
-
-    case "calculator": {
-      const expr = String(args.expression ?? "");
-      // Only allow safe characters to avoid arbitrary code execution
-      if (!/^[\d+\-*/().\s]+$/.test(expr)) {
-        return "Error: invalid characters in expression";
-      }
+    case "get_weather": {
+      const location = input.location as string;
+      return JSON.stringify({
+        location,
+        temperature: "22°C",
+        condition: "Sunny",
+      });
+    }
+    case "calculate": {
+      const expression = input.expression as string;
       try {
-        // eslint-disable-next-line no-new-func
-        return String(Function(`"use strict"; return (${expr})`)());
+        const result = Function(`"use strict"; return (${expression})`)();
+        return String(result);
       } catch {
-        return "Error: could not evaluate expression";
+        return "Error: invalid expression";
       }
     }
-
     default:
-      return `Error: unknown tool "${name}"`;
+      return `Unknown tool: ${name}`;
   }
 }
